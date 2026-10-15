@@ -1,6 +1,0 @@
-"vertexlitgeneric"
-{
-	"$basetexture" "models\jmod\ez\tools\tools_color"
-	"$surfaceprop" "metal"
-	"$model" 1 
-}

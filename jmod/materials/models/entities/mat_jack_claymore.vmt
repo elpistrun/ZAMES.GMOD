@@ -1,5 +1,0 @@
-VertexLitGeneric
-{
-	"$baseTexture" "models\entities/tex_jack_claymore"
-	"$bumpmap" "models/entities/tex_jack_claymore_normal"
-}

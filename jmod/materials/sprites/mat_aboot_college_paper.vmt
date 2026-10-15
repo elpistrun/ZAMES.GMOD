@@ -1,7 +1,0 @@
-"UnlitGeneric"
-{
-    $basetexture "sprites/tex_aboot_college_paper.vtf"
-    "$vertexalpha" 1
-    "$vertexcolor" 1
-}
-	

@@ -1,8 +1,0 @@
-
-"VertexLitGeneric"
-{
-	"$basetexture" "models/jmod/props/ifak_packet_tex"
-
-	"$phong" "1"
-}
-    

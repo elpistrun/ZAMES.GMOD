@@ -1,7 +1,0 @@
-"VertexLitGeneric"
-{
-	"$basetexture" "models/tex_jack_aidbox"
-	"$envmap" "env_cubemap"
-	"$envmaptint" "[.7 .7 .7]"
-	"$envmapmask" "models/tex_jack_aidbox_envmapmask"
-}

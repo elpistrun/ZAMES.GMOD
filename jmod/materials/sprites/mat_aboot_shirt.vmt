@@ -1,5 +1,0 @@
-"UnlitGeneric" {
-	$basetexture "sprites/tex_aboot_shirt.vtf"
-	"$vertexalpha" 1
-    "$vertexcolor" 1
-}

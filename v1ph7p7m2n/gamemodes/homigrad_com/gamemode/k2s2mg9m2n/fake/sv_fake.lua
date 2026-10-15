@@ -472,16 +472,31 @@ hook.Add("PlayerDeath", "DeathRagdoll", function(ply, att, dmginfo)
 	local rag = ply.FakeRagdoll
 
 	timer.Simple(0,function()
-		if IsValid(rag.bull) then
-			rag.bull:Remove()
+		-- Удаляем стандартный труп Garry's Mod (например, у ботов или при CreateRagdoll)
+		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) then
+			ply:GetRagdollEntity():Remove()
 		end
 
-		if IsValid(rag.ZacConsRH) then
-			rag.ZacConsRH:Remove()
+		if IsValid(rag) then
+			if IsValid(rag.bull) then
+				rag.bull:Remove()
+			end
+
+			if IsValid(rag.ZacConsRH) then
+				rag.ZacConsRH:Remove()
+			end
+		
+			if IsValid(rag.ZacConsLH) then
+				rag.ZacConsLH:Remove()
+			end
 		end
-	
-		if IsValid(rag.ZacConsLH) then
-			rag.ZacConsLH:Remove()
+	end)
+end)
+
+hook.Add("DoPlayerDeath", "Homigrad_BlockDefaultRagdoll", function(ply)
+	timer.Simple(0, function()
+		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) then
+			ply:GetRagdollEntity():Remove()
 		end
 	end)
 end)

@@ -130,7 +130,9 @@ local function ApplyHit(attacker, wep, ent, hitPos, hitGroup, force, clientDamag
 	dmgInfo:SetDamage(damage)
 	dmgInfo:SetDamageType(DMG_BULLET)
 	dmgInfo:SetDamagePosition(hitPos)
-	dmgInfo:SetDamageForce(force)
+	local finalForce = (isvector(force) and not force:IsZero()) and force or (dir * ((wep.Primary and wep.Primary.Damage) or 10) * 10)
+	if finalForce:IsZero() then finalForce = Vector(0, 0, 0.001) end
+	dmgInfo:SetDamageForce(finalForce)
 
 	-- Хитгруппа едет с трассой, а не в DamageInfo
 	local dir = (hitPos - attacker:EyePos()):GetNormalized()
@@ -191,7 +193,7 @@ local function ReceiveBullet(ply)
 		Dir = camang:Forward(),
 		Spread = Vector(0, 0, 0),
 		Tracer = 1,
-		Force = 0,
+		Force = 0.001,
 		Damage = 0,
 		IgnoreEntity = ply,
 	})
@@ -204,3 +206,11 @@ net.Receive("TPIK_SendDamage321", function(_, ply) ReceiveDamage(ply, false) end
 net.Receive("TPIK_FireBullet", function(_, ply) ReceiveBullet(ply) end)
 net.Receive("TPIK_FireBullet123", function(_, ply) ReceiveBullet(ply) end)
 net.Receive("TPIK_FireBullet321", function(_, ply) ReceiveBullet(ply) end)
+
+-- Глобальная защита от спама AddMultiDamage: g_MultiDamage.GetDamageForce() == vec3_origin
+hook.Add("EntityTakeDamage", "FixZeroDamageForceSpam", function(target, dmginfo)
+	local f = dmginfo:GetDamageForce()
+	if isvector(f) and f:IsZero() then
+		dmginfo:SetDamageForce(Vector(0, 0, 0.001))
+	end
+end)

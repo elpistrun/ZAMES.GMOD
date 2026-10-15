@@ -1,6 +1,0 @@
-"VertexlitGeneric"
-{
-	"$basetexture" "models/nh2_bdg/bandages"
-	"$model" 1
-	"$surfaceprop" "carpet"
-}

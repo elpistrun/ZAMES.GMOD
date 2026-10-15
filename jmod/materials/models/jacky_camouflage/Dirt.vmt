@@ -1,7 +1,0 @@
-"VertexLitGeneric"
-{
-	// Original shader: BaseTimesLightmap
-	"$basetexture" "models/jacky_camouflage/Dirt"
-	"$surfaceprop" "metal"
-	"$halflambert" "1"
-}

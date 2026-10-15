@@ -193,9 +193,9 @@ function SWEP:PrimaryAttack()
         bullet.Dir = TPIK_CamAng:Forward()
         bullet.Spread = Vector(self.SprayBullet or 0, self.SprayBullet or 0, 0)
         bullet.Tracer = 0
-        bullet.Force = 1
+        bullet.Force = 0.001
         bullet.Distance = self.HitDistance
-        bullet.Damage = 0
+        bullet.Damage = 0.001
         
         local fakeRagdoll = self.Owner:GetNWEntity("FakeRagdoll")
 
@@ -241,9 +241,13 @@ function SWEP:PrimaryAttack()
                     customHitGroup = tr.HitGroup 
                 end
 
+                local dForce = dmginfo:GetDamageForce()
+                if not isvector(dForce) or dForce:IsZero() then
+                    dForce = rayDir * 100
+                end
                 net.Start("TPIK_SendDamage321")
                     net.WriteEntity(ent)
-                    net.WriteVector(dmginfo:GetDamageForce())
+                    net.WriteVector(dForce)
                     net.WriteVector(tr.HitPos)
                     net.WriteInt(customHitGroup, 8)
                 net.SendToServer()
