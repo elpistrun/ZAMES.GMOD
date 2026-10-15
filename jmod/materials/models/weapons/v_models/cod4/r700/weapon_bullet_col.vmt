@@ -1,0 +1,13 @@
+"VertexlitGeneric"
+{
+	"$basetexture" "models/weapons/v_models/CoD4/r700/weapon_bullet_col"
+			//EXP_GUN
+        $bumpmap   "models/weapons/v_models/CoD4/r700/bullet_n"
+        
+        $phong  "1"
+        $phongboost  ".2"
+        $phongfresnelranges     "[1 1 1]"
+        $phongexponent 20
+        $nocull  1	
+		
+}

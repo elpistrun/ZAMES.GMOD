@@ -1,0 +1,118 @@
+--[[
+    > File stolen by <
+     __   ___      __  __                  ___ ___                ___  __   __   __               ___
+    |__) |__  |\ |  / /  \ \ / |     |\/| |__   |  |__| \ / |    |__  /  ` / _` /  \ |\ | | |\ | |__
+    |__) |___ | \| /_ \__/  |  |___  |  | |___  |  |  |  |  |___ |___ \__, \__> \__/ | \| | | \| |___
+
+    > Server: ZAMES RU SERVER #1 Homicide | Быстрая загрузка (5.42.211.79:24215) <
+    > File: addons/v1ph7p7m2n/lua/glide/sh_player.lua <
+    > Callstack: lua/autorun/sh_glide.lua:343
+lua/autorun/sh_glide.lua:377 <
+]]
+
+local PlayerMeta = FindMetaTable( "Player" )
+local EntityMeta = FindMetaTable( "Entity" )
+
+function PlayerMeta:GlideGetVehicle()
+    local seat = self:GetVehicle()
+    if not IsValid( seat ) then return end
+
+    local parent = seat:GetParent()
+
+    if IsValid( parent ) and parent.IsGlideVehicle then
+        return parent
+    end
+end
+
+do
+    local GetNWInt = EntityMeta.GetNWInt
+
+    function PlayerMeta:GlideGetSeatIndex()
+        return GetNWInt( self, "GlideSeatIndex", 0 )
+    end
+end
+
+if SERVER then
+    function PlayerMeta:GlideGetAimAngles()
+        return self.GlideCameraAngles or Angle()
+    end
+
+    function PlayerMeta:GlideGetAimPos()
+        return self.GlideCameraAimPos or Vector()
+    end
+
+    --- This function is deprecated, it has been
+    --- replaced by Player:GlideGetAimAngles.
+    function PlayerMeta:GlideGetCameraAngles()
+        return self.GlideCameraAngles or Angle()
+    end
+
+    do
+        Glide._OriginalEnterVehicle = Glide._OriginalEnterVehicle or PlayerMeta.EnterVehicle
+        local EnterVehicle = Glide._OriginalEnterVehicle
+
+        function PlayerMeta:EnterVehicle( vehicle )
+            if vehicle.IsGlideVehicle and isfunction( vehicle.GetFreeSeat ) then
+                local seat = vehicle:GetFreeSeat()
+                if not IsValid( seat ) then
+                    return
+                end
+
+                return EnterVehicle( self, seat )
+            end
+
+            return EnterVehicle( self, vehicle )
+        end
+    end
+
+    --- Utility function to get the entity creator
+    --- or CPPI owner from a entity.
+    function Glide.GetEntityCreator( source )
+        local ply
+
+        if source.CPPIGetOwner then
+            ply = source:CPPIGetOwner()
+        end
+
+        if type( ply ) == "number" then
+            ply = nil
+        end
+
+        if not IsValid( ply ) then
+            ply = source:GetCreator()
+        end
+
+        return ply
+    end
+
+    --- Utility function to set the entity creator
+    --- or CPPI owner for a entity.
+    function Glide.SetEntityCreator( target, ply )
+        target:SetCreator( ply or NULL )
+
+        if target.CPPISetOwner then
+            target:CPPISetOwner( ply )
+        end
+    end
+
+    --- Utility function to copy the entity creator
+    --- or CPPI owner from one entity to another.
+    function Glide.CopyEntityCreator( source, target )
+        local ply = Glide.GetEntityCreator( source )
+        Glide.SetEntityCreator( target, ply )
+    end
+
+    local IsValid = IsValid
+    local EntEyePos = EntityMeta.EyePos
+
+    hook.Add( "SetupMove", "Glide.CacheCameraLocation", function( ply, _, cmd )
+        local vehicle = ply:GlideGetVehicle()
+        if not IsValid( vehicle ) then return end
+
+        local angles = cmd:GetViewAngles()
+
+        ply.GlideCameraAngles = angles
+        ply.GlideCameraAimPos = EntEyePos( ply ) + angles:Forward() * cmd:GetUpMove()
+    end, HOOK_HIGH )
+end
+

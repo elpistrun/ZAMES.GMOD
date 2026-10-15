@@ -1,0 +1,25 @@
+"VertexlitGeneric"
+{
+	"$basetexture" "models/jmod/machines/workstations/weapon_a_desk"
+	"$bumpmap" "models/jmod/machines/workstations/weapon_a_desk_n"
+	
+	"$phong" "1"
+	"$phongexponent" "10"
+	"$phongfresnelranges" "[1 1 1]"
+	"$phongboost" "1"
+
+	"$detail" "models\tex_jack_gmod_metaldetail"
+	"$detailscale"		"5"
+	"$detailblendfactor"		".5"
+	"$blendtintbybasealpha" "1"
+ 	"$blendtintcoloroverbase" "0"
+	
+	Proxies
+	{
+		Color
+		{
+			resultVar	$color2 // pass the player color value to Gmod
+			default		0.23 0.35 0.41 // unused for now.
+		}
+	}
+}

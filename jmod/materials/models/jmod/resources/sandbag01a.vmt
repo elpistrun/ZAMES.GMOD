@@ -1,0 +1,7 @@
+"VertexLitGeneric"
+{
+	"$baseTexture" "models/jmod/resources/sandbag01a"
+	"$bumpmap" "models/jmod/resources/sandbag01a_n"
+	"$surfaceprop" "cloth"
+	"$nodecal" "1"
+}

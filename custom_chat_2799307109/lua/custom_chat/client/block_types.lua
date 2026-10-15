@@ -1,0 +1,707 @@
+--[[
+    > File stolen by <
+     __   ___      __  __                  ___ ___                ___  __   __   __               ___
+    |__) |__  |\ |  / /  \ \ / |     |\/| |__   |  |__| \ / |    |__  /  ` / _` /  \ |\ | | |\ | |__
+    |__) |___ | \| /_ \__/  |  |___  |  | |___  |  |  |  |  |___ |___ \__, \__> \__/ | \| | | \| |___
+
+    > Server: ZAMES RU SERVER #1 Homicide | Быстрая загрузка (5.42.211.79:24215) <
+    > File: addons/custom_chat_2799307109/lua/custom_chat/client/block_types.lua <
+    > Callstack: addons/custom_chat_2799307109/lua/autorun/sh_custom_chat.lua:263 <
+]]
+
+--- This file contains utilities to turn blocks into Javascript code.
+
+local Find = string.find
+local Format = string.format
+local Substring = string.sub
+local SafeString = string.JavascriptSafe
+local Match = string.match
+
+local Append = CustomChat.AppendString
+local ColorToRGB = CustomChat.ColorToRGB
+local IsStringValid = CustomChat.IsStringValid
+
+-- Force plain HTTP for certain image links when Chromium is not in use
+local forceHTTP
+
+if system.IsLinux() and BRANCH ~= "x86-64" then
+    CustomChat.Print( "Not using Chromium, enforcing plain HTTP for some image links." )
+
+    forceHTTP = {
+        ["avatars.cloudflare.steamstatic.com"] = true,
+        ["avatars.akamai.steamstatic.com"] = true,
+        ["avatars.fastly.steamstatic.com"] = true,
+        ["shared.fastly.steamstatic.com"] = true,
+        ["media.discordapp.net"] = true,
+        ["cdn.discordapp.com"] = true -- seems like it still does not work
+    }
+end
+
+--[[
+    Utilities to create HTML elements
+]]
+
+local Create = {}
+
+--- Utility to generate unique IDs for embeds.
+function CustomChat:GenerateEmbedID()
+    local embedId = ( self.lastEmbedId or 0 ) + 1
+    self.lastEmbedId = embedId
+    return embedId
+end
+
+--- Received a response from our metadata fetcher
+function CustomChat.OnHTTPResponse( embedId, body, url, panel )
+    if not IsValid( panel ) then return end
+
+    local metaTags = {}
+    local metaPatt = "<meta[%g%s]->"
+
+    for s in string.gmatch( body, metaPatt ) do
+        metaTags[#metaTags + 1] = s
+    end
+
+    if #metaTags == 0 then return end
+
+    local props = {}
+
+    for _, meta in ipairs( metaTags ) do
+        -- Try to find any content on this meta tag
+        local _, _, content = Find( meta, "content=\"([%g%s]-)\"" )
+
+        -- Try to find the meta tag name for Facebook
+        local _, _, name = Find( meta, "property=\"og:([%g]-)\"" )
+
+        -- Try to find the meta tag name for Twitter/X
+        if not name then
+            _, _, name = Find( meta, "name=\"twitter:([%g]-)\"" )
+        end
+
+        if name and content then
+            props[name] = content
+        end
+    end
+
+    local _, site = string.match( url, "^(%w-)://([^/]*)/?" )
+
+    -- Replace the content of existing embeds
+    -- with what we got from the internet
+    local lines = { ( [[
+        var embedElements = document.getElementsByClassName('%s');
+
+        for (var i = 0; i < embedElements.length; i++) {
+            var elEmbed = embedElements[i];
+            elEmbed.textContent = "";
+            elEmbed.className = "embed %s";
+        ]] ):format( embedId, embedId )
+    }
+
+    -- Embed thumbnail
+    if props["image"] then
+        if Substring( props["image"], 1, 2 ) == "//" then
+            props["image"] = "https:" .. props["image"]
+        end
+
+        Append( lines, Create.Element( "img", "elImg", "elEmbed" ) )
+        Append( lines, "elImg.className = 'embed-thumb';" )
+        Append( lines, "elImg.src = '%s';", SafeString( props["image"] ) )
+    end
+
+    Append( lines, Create.Element( "section", "elEmbedBody", "elEmbed" ) )
+    Append( lines, "elEmbedBody.className = 'embed-body';" )
+
+    if props["site_name"] then
+        Append( lines, Create.Element( "h1", "elName", "elEmbedBody" ) )
+        Append( lines, "elName.innerHTML = '%s';", SafeString( props["site_name"] ) )
+    end
+
+    -- Embed title
+    local title = props["title"] or site
+
+    if title:len() > 50 then
+        title = title:Left( 47 ) .. "..."
+    end
+
+    Append( lines, Create.Element( "h2", "elTitle", "elEmbedBody" ) )
+    Append( lines, "elTitle.innerHTML = '%s';", SafeString( title ) )
+
+    -- Embed description
+    local desc = props["description"] or url
+
+    if desc:len() > 100 then
+        desc = desc:Left( 97 ) .. "..."
+    end
+
+    Append( lines, Create.Element( "i", "elDesc", "elEmbedBody" ) )
+    Append( lines, "elDesc.innerHTML = '%s';", SafeString( desc ) )
+    Append( lines, "}" )
+
+    panel:QueueJavascript( table.concat( lines, "\n" ) )
+end
+
+--- Returns JS code to create an element,
+--- and make it a child of another one.
+---
+--- tag string Element tag type
+--- myVar string Element's variable
+--- parentVar string Element's parent variable ("message" by default)
+function Create.Element( tag, myVar, parentVar )
+    parentVar = parentVar or "message"
+
+    return Format( [[
+var %s = document.createElement('%s');
+%s.appendChild(%s);
+    ]], myVar, tag, parentVar, myVar )
+end
+
+--- Returns JS code to create a text element.
+--- Optionally, it can act as a clickable link.
+function Create.Text( text, font, link, color, bgColor, cssClass )
+    local lines = { Create.Element( "span", "elText" ) }
+
+    Append( lines, "elText.textContent = '%s';", SafeString( text ) )
+
+    if IsStringValid( font ) then
+        Append( lines, "elText.style.fontFamily = '%s';", font )
+    end
+
+    if IsStringValid( link ) then
+        Append( lines, "elText.onclick = function(){ CChat.OnClickLink('%s') };", SafeString( link ) )
+        Append( lines, "elText.clickableText = true;" )
+        Append( lines, "elText.style.cursor = 'pointer';" )
+    end
+
+    if cssClass then
+        Append( lines, "elText.className = '%s';", cssClass )
+    end
+
+    if color and color ~= color_white then
+        Append( lines, "elText.style.color = '%s';", ColorToRGB( color ) )
+    end
+
+    if bgColor then
+        Append( lines, "elText.style.backgroundColor = '%s';", ColorToRGB( bgColor ) )
+    end
+
+    return table.concat( lines, "\n" )
+end
+
+--- Returns JS code to create a image element.
+--- Optionally, it can act as a clickable link
+function Create.Image( url, link, cssClass, altText, safeFilter )
+    if forceHTTP then
+        local prefix, site = string.match( url, "^(%w-)://([^/]*)/" )
+
+        if site and prefix == "https" and forceHTTP[site] then
+            CustomChat.Print( "Forcing plain HTTP for %s", site )
+            url = "http" .. Substring( url, 6 )
+        end
+    end
+
+    url = SafeString( url )
+
+    local lines = {}
+
+    if safeFilter then
+        local embedId = CustomChat:GenerateEmbedID()
+        local safeguardId = "safeguard_" .. embedId
+
+        Append( lines, Create.Element( "span", "elSafeguard" ) )
+        Append( lines, "elSafeguard.className = 'safeguard';" )
+
+        Append( lines, Create.Element( "img", "elImg", "elSafeguard" ) )
+
+        Append( lines, Create.Element( "span", "elHint", "elSafeguard" ) )
+        Append( lines, "elHint.id = '%s';", safeguardId )
+        Append( lines, "elHint.className = 'safeguard-hint';" )
+        Append( lines, "elHint.textContent = '%s';", CustomChat.GetLanguageText( "click_to_reveal" ) )
+        Append( lines, "elHint.onclick = function(){ RemoveElementById('%s'); };", safeguardId )
+    else
+        Append( lines, Create.Element( "img", "elImg" ) )
+    end
+
+    Append( lines, "elImg.src = '%s';", url )
+
+    if link then
+        link = SafeString( link )
+        Append( lines, "elImg.onclick = function(){ CChat.OnClickLink('%s') };", link )
+    end
+
+    if cssClass then
+        Append( lines, "elImg.className = '%s';", cssClass )
+    end
+
+    if altText then
+        Append( lines, "elImg.alt = '%s';", altText )
+    end
+
+    return table.concat( lines, "\n" )
+end
+
+--- Returns JS code to create a audio media element.
+function Create.Audio( url, ctx )
+    local lines = { Create.Text( url, ctx.font, url, Color( 50, 100, 255 ) ) }
+
+    url = SafeString( url )
+
+    Append( lines, Create.Element( "audio", "elAudio" ) )
+    Append( lines, "elAudio.className = 'media-player';" )
+    Append( lines, "elAudio.volume = 0.8;" )
+    Append( lines, "elAudio.setAttribute('preload', 'metadata');" )
+    Append( lines, "elAudio.setAttribute('controls', 'controls');" )
+    Append( lines, "elAudio.setAttribute('controlsList', 'nodownload noremoteplayback');" )
+    Append( lines, "elAudio.src = '%s';", url )
+
+    return table.concat( lines, "\n" )
+end
+
+-- Background color for code snippets
+local CODE_BG_COLOR = Color( 47, 49, 54, 255 )
+
+--- Returns JS code that creates a block of code
+function Create.Code( code, font, inline )
+    local lines = { Create.Element( "span", "elCode" ) }
+
+    Append( lines, "elCode.className = '%s';", inline and "code-line" or "code" )
+    Append( lines, "elCode.style.backgroundColor = '%s';", ColorToRGB( CODE_BG_COLOR ) )
+
+    font = IsStringValid( font ) and font or "monospace"
+
+    -- "highlight" the code, creating child elements for each token
+    local tokens = CustomChat.TokenizeCode( code )
+
+    for _, t in ipairs( tokens ) do
+        lines[#lines + 1] = Create.Element( "span", "elToken", "elCode" )
+
+        Append( lines, "elToken.textContent = '%s';", SafeString( t.value ) )
+        Append( lines, "elToken.style.color = '%s';", t.color )
+        Append( lines, "elToken.style.fontFamily = '%s';", font )
+    end
+
+    return table.concat( lines, "\n" )
+end
+
+--- Returns JS code that creates a box to display website metadata.
+function Create.Embed( url, panel )
+    local embedId = "embed_" .. CustomChat:GenerateEmbedID()
+
+    HTTP( {
+        url = url,
+        method = "GET",
+
+        success = function( code, body )
+            code = tostring( code )
+
+            local isHTML = body:len() > 15 and body:sub( 1, 15 ) == "<!DOCTYPE html>"
+            if not isHTML and code:sub( 1, 1 ) ~= "2" then return end
+
+            CustomChat.OnHTTPResponse( embedId, body, url, panel )
+        end
+    } )
+
+    url = SafeString( url )
+
+    local lines = { Create.Element( "p", "elEmbed" ) }
+
+    Append( lines, "elEmbed.className = '%s';", "link " .. embedId )
+    Append( lines, "elEmbed.textContent = '%s';", url )
+    Append( lines, "elEmbed.onclick = function(){ CChat.OnClickLink('%s') };", url )
+
+    return table.concat( lines, "\n" )
+end
+
+--- Returns JS code that creates gradient text
+function Create.Gradient( text, font, colorA, colorB, elementName )
+    elementName = elementName or "elGradient"
+
+    -- Gradient container/glow
+    local lines = { Create.Element( "span", elementName ) }
+    Append( lines, "%s.className = 'gradient-container';", elementName )
+    Append( lines, "%s.textContent = '%s';", elementName, text )
+
+    -- Use the combined colors for the glow effect
+    local h, s, l = ColorToHSL( Color(
+        ( colorA.r + colorB.r ) * 0.5,
+        ( colorA.g + colorB.g ) * 0.5,
+        ( colorA.b + colorB.b ) * 0.5
+    ) )
+
+    local colorGlow = ColorToRGB( HSLToColor( h, s, l * 0.5 ) )
+
+    Append( lines, "%s.style.color = '%s';", elementName, colorGlow )
+    Append( lines, "%s.style.textShadow = '0px 0px 0.2em %s';", elementName, colorGlow )
+
+    -- Gradient foreground/text
+    Append( lines, Create.Element( "span", "elGradientText", elementName ) )
+    Append( lines, "elGradientText.className = 'gradient-fg';" )
+    Append( lines, "elGradientText.textContent = '%s';", text )
+    Append( lines, "elGradientText.style.backgroundImage = '-webkit-linear-gradient(left, %s, %s)';", ColorToRGB( colorA ), ColorToRGB( colorB ) )
+
+    if IsStringValid( font ) then
+        Append( lines, "%s.style.fontFamily = '%s';", elementName, font )
+        Append( lines, "elGradientText.style.fontFamily = '%s';", font )
+    end
+
+    return table.concat( lines, "\n" )
+end
+
+--[[
+    Steam avatar fetcher
+]]
+
+-- Avatar URL cache
+local avatarCache = {}
+
+-- Avatar placeholder until we are done fetching the player's avatar
+local avatarPlaceholder = "asset://garrysmod/materials/icon16/user.png"
+
+local function ExtractAvatarFromHTML( data )
+    local url = Match( data, "<div class=\"playerAvatar.-<img srcset=\"(.-%..-)\"" )
+
+    return url
+end
+
+--- Make sure this URL returns a successful status code.
+local function ValidateURL( url, callback )
+    HTTP( {
+        url = url,
+        method = "GET",
+
+        success = function( code )
+            callback( code < 400 )
+        end,
+
+        failed = function()
+            callback( false )
+        end
+    } )
+end
+
+--- Replace the image source of existing avatars for a specific SteamID.
+local function UpdateAllAvatars( panel, steamId64, url )
+    if not IsValid( panel ) then return end
+
+    local code = (
+        [[var avatarElements = document.getElementsByClassName('ply-%s');
+
+        for (var i = 0; i < avatarElements.length; i++) {
+            avatarElements[i].src = '%s';
+        }]]
+    ):format( steamId64, url )
+
+    panel:QueueJavascript( code )
+end
+
+function CustomChat.FetchUserAvatarURL( id, panel )
+    if not id then
+        return avatarPlaceholder
+    end
+
+    local url = avatarCache[id]
+
+    if url and url ~= "" then
+        return url
+    end
+
+    -- Prevent fetching the same user
+    -- multiple times at the same time
+    if url == "" then
+        return avatarPlaceholder
+    end
+
+    avatarCache[id] = ""
+
+    CustomChat.Print( "Fetching profile data for %s", id )
+
+    local OnFail = function( reason )
+        CustomChat.Print( "Failed to fetch avatar for %s: %s", id, reason )
+        avatarCache[id] = nil
+    end
+
+    HTTP( {
+        url = string.format( "https://steamcommunity.com/profiles/%s", id ),
+        method = "GET",
+
+        success = function( code, body )
+            if not body or code ~= 200 then
+                OnFail( "Non-OK code or empty profile data" )
+                return
+            end
+
+            -- Is the panel still available?
+            if not IsValid( panel ) then return end
+
+            url = ExtractAvatarFromHTML( body )
+
+            if url then
+                if forceHTTP then
+                    url = "http" .. Substring( url, 6 )
+                end
+
+                CustomChat.Print( "Fetching avatar image for %s: %s", id, url )
+
+                ValidateURL( url, function( success )
+                    if success then
+                        avatarCache[id] = url
+
+                        CustomChat.Print( "Got avatar for %s", id )
+                        UpdateAllAvatars( panel, id, url )
+                    else
+                        OnFail( "Failed to fetch avatar image" )
+                    end
+                end )
+            else
+                OnFail( "Missing avatar URL from the HTML data" )
+            end
+        end,
+
+        failed = OnFail
+    } )
+
+    return avatarPlaceholder
+end
+
+--[[
+    Block registry
+]]
+
+local blocks = CustomChat.blocks or {}
+
+CustomChat.blocks = blocks
+
+-- Used to test if a URL probably points to an image
+local IMAGE_EXTENSIONS = { "png", "jpg", "jpeg", "gif", "webp", "svg" }
+
+-- Used to test if a URL probably points to an audio file
+local AUDIO_EXTENSIONS = { "mp3", "wav", "ogg", "flac" }
+
+local function GetURLType( url )
+    local withoutQueryStrings = url:gsub( "%?[^/]+", "" ):lower()
+
+    for _, ext in ipairs( IMAGE_EXTENSIONS ) do
+        if withoutQueryStrings:EndsWith( ext ) then
+            return "image"
+        end
+    end
+
+    for _, ext in ipairs( AUDIO_EXTENSIONS ) do
+        if withoutQueryStrings:EndsWith( ext ) then
+            return "audio"
+        end
+    end
+
+    return "url"
+end
+
+local ChopEnds = CustomChat.ChopEnds
+
+blocks["string"] = function( value, ctx )
+    return Create.Text( value, ctx.font, nil, ctx.color )
+end
+
+blocks["player"] = function( value, ctx )
+    local colors = { ctx.color }
+
+    -- Get the player name color(s)
+    if IsValid( value.ply ) then
+        if CustomChat.USE_TAGS then
+            local nameColor = CustomChat.Tags:GetNameColor( value.ply )
+            if nameColor then colors[1] = nameColor end
+
+        elseif value.ply.getChatTag then
+            -- aTags support
+            local _, _, nameColor = value.ply:getChatTag()
+            if nameColor then colors[1] = nameColor end
+        end
+
+        local colorA, colorB = hook.Run( "OverrideCustomChatPlayerColor", value.ply )
+
+        if IsColor( colorA ) then
+            colors[1] = colorA
+
+            if IsColor( colorB ) then
+                colors[2] = colorB
+            end
+        end
+    end
+
+    local lines = {}
+
+    -- Create avatar image
+    if not value.isBot and ctx.panel.displayAvatars then
+        lines[#lines + 1] = Create.Image( CustomChat.FetchUserAvatarURL( value.id64, ctx.panel ), nil, "avatar ply-" .. value.id64 )
+
+        if colors[1] then
+            Append( lines, "elImg.style['border-color'] = '%s';", ColorToRGB( colors[1] ) )
+        end
+    end
+
+    local name = SafeString( value.name )
+
+    if #colors > 1 then
+        -- If we have more than one color, create a gradient
+        lines[#lines + 1] = Create.Gradient( name, ctx.font, colors[1], colors[2], "elPlayer" )
+    else
+        -- Otherwise create a regular text element
+        lines[#lines + 1] = Create.Element( "span", "elPlayer" )
+        Append( lines, "elPlayer.textContent = '%s';", name )
+
+        if IsStringValid( ctx.font ) then
+            Append( lines, "elPlayer.style.fontFamily = '%s';", ctx.font )
+        end
+
+        if colors[1] then
+            Append( lines, "elPlayer.style.color = '%s';", ColorToRGB( colors[1] ) )
+        end
+    end
+
+    if not value.isBot then
+        Append( lines, "elPlayer._playerData = '%s';", util.TableToJSON( {
+            steamId = value.id,
+            steamId64 = value.id64
+        } ) )
+
+        Append( lines, "elPlayer.style.cursor = 'pointer';" )
+        Append( lines, "elPlayer.clickableText = true;" )
+    end
+
+    return table.concat( lines, "\n" )
+end
+
+blocks["avatar_image"] = function( value, ctx )
+    if not ctx.panel.displayAvatars then return "" end
+    if not IsStringValid( value ) then return "" end
+
+    local url = SafeString( value )
+    local lines = { Create.Image( url, nil, "avatar" ) }
+
+    if ctx.color then
+        Append( lines, "elImg.style['border-color'] = '%s';", ColorToRGB( ctx.color ) )
+    end
+
+    return table.concat( lines, "\n" )
+end
+
+blocks["emoji"] = function( value, ctx )
+    local url = CustomChat.GetEmojiURL( value:sub( 2, -2 ) )
+
+    if url then
+        return Create.Image( url, nil, "emoji", value )
+    end
+
+    return Create.Text( value, ctx.font, nil, ctx.color )
+end
+
+blocks["model"] = function( value, ctx )
+    local js = ""
+    local iconPath = "materials/spawnicons/" .. string.Replace( value, ".mdl", ".png" )
+
+    if file.Exists( iconPath, "GAME" ) then
+        js = Create.Image( "asset://garrysmod/" .. iconPath, nil, "emoji" )
+    end
+
+    return js .. Create.Text( value, ctx.font, nil, ctx.color )
+end
+
+blocks["url"] = function( value, ctx )
+    local dontEmbed = value:sub( 1, 1 ) == "<"
+
+    if dontEmbed then
+        value = ChopEnds( value, 2 )
+    end
+
+    local urlType = GetURLType( value )
+    local canEmbed = not dontEmbed and CustomChat.GetConVarInt( "always_allow_embeds", 0 ) > 0
+    local lastMessage = CustomChat.lastReceivedMessage
+
+    if not dontEmbed and lastMessage and IsValid( lastMessage.speaker ) then
+        canEmbed = hook.Run( "CanEmbedCustomChat", lastMessage.speaker, value, urlType ) ~= false
+    end
+
+    if canEmbed and CustomChat.IsWhitelisted( value ) then
+        if urlType == "image" then
+            return Create.Image( value, value, nil, value, CustomChat.GetConVarInt( "safe_mode", 1 ) > 0 )
+
+        elseif urlType == "audio" then
+            return Create.Audio( value, ctx )
+        else
+            return Create.Embed( value, ctx.panel )
+        end
+    end
+
+    return Create.Text( value, ctx.font, value, Color( 50, 100, 255 ) )
+end
+
+blocks["hyperlink"] = function( value, ctx )
+    local label = string.match( value, "%[[%s%g]+%]" )
+    local url = string.match( value, "%(https?://[^'\">%s]+%)" )
+
+    label = ChopEnds( label, 2 )
+    url = ChopEnds( url, 2 )
+
+    return Create.Text( label, ctx.font, url, ctx.color, nil, "hyperlink" )
+end
+
+blocks["spoiler"] = function( value, ctx )
+    return Create.Text( ChopEnds( value, 3 ), ctx.font, nil, nil, nil, "spoiler" )
+end
+
+blocks["bold"] = function( value, ctx )
+    return Create.Text( ChopEnds( value, 3 ), ctx.font, nil, ctx.color, nil, "b-text" )
+end
+
+blocks["italic"] = function( value, ctx )
+    return Create.Text( ChopEnds( value, 2 ), ctx.font, nil, ctx.color, nil, "i-text" )
+end
+
+blocks["bold_italic"] = function( value, ctx )
+    return Create.Text( ChopEnds( value, 4 ), ctx.font, nil, ctx.color, nil, "b-text i-text" )
+end
+
+blocks["code_line"] = function( value, ctx )
+    return Create.Code( ChopEnds( value, 2 ), ctx.font, true )
+end
+
+blocks["code"] = function( value, ctx )
+    value = ChopEnds( value, value[1] == "{" and 3 or 4 )
+    value = value:gsub( "[\n\r]-", "" ) -- trim line breaks
+
+    return Create.Code( value:Trim(), ctx.font, false )
+end
+
+blocks["rainbow"] = function( value, ctx )
+    return Create.Text( ChopEnds( value, 3 ), ctx.font, nil, nil, nil, "rainbow" )
+end
+
+blocks["advert"] = function( value, ctx )
+    value = ChopEnds( value, 3 )
+
+    local lines = {
+        Create.Element( "span", "elAdvert" ),
+        "elAdvert.className = 'advert';",
+        Create.Element( "p", "elText", "elAdvert" )
+    }
+
+    Append( lines, "elText.textContent = '%s';", SafeString( value ) )
+    Append( lines, "elText.style.color = '%s';", ColorToRGB( ctx.color ) )
+
+    return table.concat( lines, "\n" )
+end
+
+local function ParseComponent( str )
+    return math.Clamp( tonumber( str ) or 0, 0, 255 )
+end
+
+blocks["gradient"] = function( value, ctx )
+    local components = ChopEnds( string.match( value, "%$%d+,%d+,%d+%,%d+,%d+,%d+%$" ), 2 )
+    local text = ChopEnds( string.match( value, "%([^%c]+%)" ), 2 )
+
+    components = string.Explode( ",", components, false )
+    text = SafeString( text )
+
+    local colorA = Color( ParseComponent( components[1] ), ParseComponent( components[2] ), ParseComponent( components[3] ) )
+    local colorB = Color( ParseComponent( components[4] ), ParseComponent( components[5] ), ParseComponent( components[6] ) )
+
+    return Create.Gradient( text, ctx.font, colorA, colorB )
+end
+
