@@ -60,6 +60,9 @@ function PlayerMeta:RagView()
 
 	ply:SetCollisionGroup(COLLISION_GROUP_IN_VEHICLE)
 	ply:SetMoveType(MOVETYPE_OBSERVER)
+	ply:SetNoDraw(true)
+	ply:DrawShadow(false)
+	ply:SetNotSolid(true)
 end
 
 function PlayerMeta:Notify(string)
@@ -279,15 +282,30 @@ hook.Add("PlayerSpawn","ResetFake",function(ply) --обнуление регдо
 	ply:SetNWEntity("Ragdoll",nil)
 end)
 
-hook.Add("Player Think","VelocityPlayerFallOnPlayerCheck",function(ply,time)
+function PlayerMeta:CreateRagdoll()
+	if IsValid(self.FakeRagdoll) then
+		return self.FakeRagdoll
+	end
+	return NULL
+end
+
+local function VelocityFallCheck(ply)
+	if not IsValid(ply) or not ply:Alive() then return end
 	local speed = ply:GetVelocity():Length()
 	if ROUND_NAME == "dr" then
 		return
 	end
-	if ply:GetMoveType() != MOVETYPE_NOCLIP and not ply.Fake and not ply:HasGodMode() and ply:Alive() then
+	if ply:GetMoveType() ~= MOVETYPE_NOCLIP and not ply.Fake and not ply:HasGodMode() then
 		if speed < 650 then return end
 
 		Faking(ply)
+	end
+end
+
+hook.Add("PlayerPostThink", "VelocityPlayerFallOnPlayerCheck", VelocityFallCheck)
+hook.Add("Think", "VelocityPlayerFallOnPlayerCheck_Think", function()
+	for _, p in ipairs(player.GetAll()) do
+		VelocityFallCheck(p)
 	end
 end)
 
@@ -332,13 +350,16 @@ function Faking(ply,force)
 		ply.CurWeapon = ply:GetActiveWeapon()
 		ply.FakeWep = nil
         ply:CreateFake(force or Vector(0, 0, 0))
-		ply:SetNWBool("Fake",ply.Fake)
-		ply:SetNWEntity("FakeRagdoll",ply.FakeRagdoll)
-		if !ply:GetActiveWeapon().SupportTPIK then
+        ply.Fake = true
+		ply:SetNWBool("Fake", true)
+		ply:SetNWEntity("FakeRagdoll", ply.FakeRagdoll)
+		if IsValid(ply:GetActiveWeapon()) and not ply:GetActiveWeapon().SupportTPIK then
 			ply:SetActiveWeapon(nil)
 		end
-        ply.Fake = true
 		ply:SetNoTarget(true)
+		ply:SetNoDraw(true)
+		ply:DrawShadow(false)
+		ply:SetNotSolid(true)
     else
 		if ply:GetNWBool("Cuffed") or IsValid(ply.FakeRagdoll) and ply.FakeRagdoll:GetNWBool("Cuffed") then
 			return
@@ -465,15 +486,27 @@ hg.Gibbed = hg.Gibbed or {}
 hook.Add("PlayerDeath", "DeathRagdoll", function(ply, att, dmginfo)
 	if hg.Gibbed and hg.Gibbed[ply] then return end
 	ply.LastRagdollTime = 0
-	if !ply.Fake then
+	if not ply.Fake or not IsValid(ply.FakeRagdoll) then
 		Faking(ply)
 	end
 
 	local rag = ply.FakeRagdoll
 
-	timer.Simple(0,function()
+	-- Полностью скрываем модель умершего игрока, чтобы в игре оставался ТОЛЬКО труп (рагдолл)
+	ply:SetNoDraw(true)
+	ply:DrawShadow(false)
+	ply:SetNotSolid(true)
+	ply:SetNWBool("Fake", true)
+
+	if IsValid(rag) then
+		ply:SetNWEntity("FakeRagdoll", rag)
+		ply:SetNWEntity("RagdollDeath", rag)
+		rag:SetNWEntity("RagdollOwner", ply)
+	end
+
+	timer.Simple(0, function()
 		-- Удаляем стандартный труп Garry's Mod (например, у ботов или при CreateRagdoll)
-		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) then
+		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) and ply:GetRagdollEntity() ~= rag then
 			ply:GetRagdollEntity():Remove()
 		end
 
@@ -495,7 +528,7 @@ end)
 
 hook.Add("DoPlayerDeath", "Homigrad_BlockDefaultRagdoll", function(ply)
 	timer.Simple(0, function()
-		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) then
+		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) and ply:GetRagdollEntity() ~= ply.FakeRagdoll then
 			ply:GetRagdollEntity():Remove()
 		end
 	end)
@@ -512,7 +545,8 @@ hook.Add("PhysgunPickup", "DropPlayer2", function(ply, ent)
 	end
 end)
 
-hook.Add("Player Think","FakeThink",function(ply,time)
+local function FakeThink(ply)
+	if not IsValid(ply) then return end
 	if !ply.Fake then
 		local ang = ply:EyeAngles()
 		ang.p = 0
@@ -525,9 +559,15 @@ hook.Add("Player Think","FakeThink",function(ply,time)
 	if ply:GetNWBool("Cuffed") then
 		ply:SetActiveWeapon(nil)
 	end
-	ply:SetNWBool("Fake",ply.Fake)
-	ply:SetNWEntity("FakeRagdoll",ply.FakeRagdoll)
+	ply:SetNWBool("Fake", ply.Fake or false)
+	ply:SetNWEntity("FakeRagdoll", ply.FakeRagdoll)
     if not ply.Fake or not ply:Alive() then ply:SetNWBool("RightArm",false) ply:SetNWBool("LeftArm",false) return end
+
+	-- Если игрок в фейке, гарантируем невидимость и неосязаемость его физического тела
+	ply:SetNoDraw(true)
+	ply:DrawShadow(false)
+	ply:SetNotSolid(true)
+
     local rag = ply.FakeRagdoll
 	if not IsValid(rag) then ply:Kill() return end
 	if rag == NULL then return end
@@ -571,7 +611,9 @@ hook.Add("Player Think","FakeThink",function(ply,time)
 	local pdiff = math.AngleDifference(ply.PrevAng.p,ply:EyeAngles().p)
 	local p_diff_round = math.Round(pdiff / 5,1)
 	ply:SetPos(HeadPos)
-	//ply:SetNoDraw(false)
+	ply:SetNoDraw(true)
+	ply:DrawShadow(false)
+	ply:SetNotSolid(true)
 	ply:SetMaterial(rag:GetMaterial())
 	local is_otrub = ply.otrub or (ply.organism and ply.organism.otrub)
 	if !is_otrub then rag:SetEyeTarget( LocalPos ) else rag:SetEyeTarget( Vector(0,0,0) ) end
@@ -592,10 +634,17 @@ hook.Add("Player Think","FakeThink",function(ply,time)
 	if ply:InVehicle() then
 		ply:ExitVehicle()
 	end
-	ply:SetNWBool("Fake",ply.Fake)
+	ply:SetNWBool("Fake", ply.Fake or false)
     rag:SetFlexWeight(9,0)
 
 	hook.Run("FakeControl",ply,rag)
+end
+
+hook.Add("PlayerPostThink", "FakeThink", FakeThink)
+hook.Add("Think", "FakeThink_GlobalLoop", function()
+	for _, p in ipairs(player.GetAll()) do
+		FakeThink(p)
+	end
 end)
 
 hook.Add("PlayerSpawn","collide",function(ply)

@@ -26,8 +26,9 @@ hg.ragdollFake = {}
 
 net.Receive("fake",function(len,ply)
 	if !ply:Alive() then return end
-	if !hg.RateLimit(ply, "fake", 0.5) then return end
-    Faking(ply,ply:GetVelocity())
+	if ply._fakeCooldown and ply._fakeCooldown > CurTime() then return end
+	ply._fakeCooldown = CurTime() + 0.5
+    Faking(ply)
 end)
 
 net.Receive("unload",function(l,ply)
@@ -59,6 +60,9 @@ function PlayerMeta:RagView()
 
 	ply:SetCollisionGroup(COLLISION_GROUP_IN_VEHICLE)
 	ply:SetMoveType(MOVETYPE_OBSERVER)
+	ply:SetNoDraw(true)
+	ply:DrawShadow(false)
+	ply:SetNotSolid(true)
 end
 
 function PlayerMeta:Notify(string)
@@ -169,6 +173,55 @@ function PlayerMeta:CreateFake(force)
 	bull.rag = rag
 	bull.ply = ply
 
+	-- Обработка урона от падения и жестких ударов о препятствия
+	rag:AddCallback("PhysicsCollide", function(r, colData)
+		if not IsValid(r) then return end
+		local owner = r.RagdollOwner or r:GetNWEntity("RagdollOwner")
+		if not IsValid(owner) or not owner:IsPlayer() or not owner:Alive() then return end
+
+		-- Игнорируем столкновения с игроком и другими частями этого же рагдолла
+		local hitEnt = colData.HitEntity
+		if hitEnt == owner or hitEnt == r or (IsValid(hitEnt) and hitEnt.RagdollOwner == owner) then return end
+
+		-- Вычисляем реальную силу удара (разницу скоростей до и после столкновения)
+		local impactSpeed = 0
+		if colData.OurOldVelocity and colData.OurNewVelocity then
+			impactSpeed = (colData.OurOldVelocity - colData.OurNewVelocity):Length()
+		elseif colData.Speed then
+			impactSpeed = colData.Speed
+		end
+
+		-- Порог реального жесткого удара/падения (от 480 units/s)
+		if impactSpeed > 480 then
+			local damage = math.floor((impactSpeed - 480) * 0.15)
+			if damage >= 2 then
+				owner._nextFallDmgTime = owner._nextFallDmgTime or 0
+				if CurTime() > owner._nextFallDmgTime then
+					owner._nextFallDmgTime = CurTime() + 0.3
+
+					-- Наносим урон напрямую в здоровье игрока
+					local curHp = owner:Health()
+					local newHp = curHp - damage
+
+					if newHp <= 0 then
+						owner:Kill()
+					else
+						owner:SetHealth(newHp)
+
+						-- Создаем событие урона для хуков
+						local dmgInfo = DamageInfo()
+						dmgInfo:SetDamage(damage)
+						dmgInfo:SetDamageType(DMG_FALL)
+						dmgInfo:SetAttacker(game.GetWorld())
+						dmgInfo:SetInflictor(game.GetWorld())
+						dmgInfo:SetDamagePosition(colData.HitPos)
+						hook.Run("EntityTakeDamage", owner, dmgInfo)
+					end
+				end
+			end
+		end
+	end)
+
     return rag
 end
 
@@ -179,9 +232,13 @@ hook.Add("Think","VelocityFakeHitPlyCheck",function()
 				rag.JModEntInv:SetPos(rag:GetPos())
 			end
 			if rag:GetVelocity():Length() > 100 then
-				rag:SetCollisionGroup(COLLISION_GROUP_NONE)
+				if rag:GetCollisionGroup() ~= COLLISION_GROUP_NONE then
+					rag:SetCollisionGroup(COLLISION_GROUP_NONE)
+				end
 			else
-				rag:SetCollisionGroup(COLLISION_GROUP_WEAPON)
+				if rag:GetCollisionGroup() ~= COLLISION_GROUP_WEAPON then
+					rag:SetCollisionGroup(COLLISION_GROUP_WEAPON)
+				end
 			end
 		end
 	end
@@ -190,9 +247,34 @@ end)
 hook.Add("PlayerSpawn","ResetFake",function(ply) --обнуление регдолла после вставания
 	ply:Give("weapon_hands")
 	ply.Fake = false
+	ply.CanMove = true
 	ply:AddEFlags(EFL_NO_DAMAGE_FORCES)
 
 	ply:SetNWBool("Fake",false)
+
+	-- Если остался рагдолл фейка или рагдолл смерти, удаляем его
+	if IsValid(ply.FakeRagdoll) then
+		if IsValid(ply.FakeRagdoll.bull) then
+			ply.FakeRagdoll.bull:Remove()
+		end
+		ply.FakeRagdoll:Remove()
+		ply.FakeRagdoll = nil
+	end
+
+	local curFakeRag = ply:GetNWEntity("FakeRagdoll")
+	if IsValid(curFakeRag) then
+		if IsValid(curFakeRag.bull) then
+			curFakeRag.bull:Remove()
+		end
+		curFakeRag:Remove()
+	end
+
+	ply:SetNWEntity("FakeRagdoll", NULL)
+	ply:SetNWEntity("RagdollDeath", NULL)
+	ply:SetNWEntity("Ragdoll", NULL)
+
+	ply:SetMoveType(MOVETYPE_WALK)
+	ply:SetCollisionGroup(COLLISION_GROUP_PLAYER)
 
 	if ply.PLYSPAWN_OVERRIDE then return end
 	
@@ -200,15 +282,30 @@ hook.Add("PlayerSpawn","ResetFake",function(ply) --обнуление регдо
 	ply:SetNWEntity("Ragdoll",nil)
 end)
 
-hook.Add("Player Think","VelocityPlayerFallOnPlayerCheck",function(ply,time)
+function PlayerMeta:CreateRagdoll()
+	if IsValid(self.FakeRagdoll) then
+		return self.FakeRagdoll
+	end
+	return NULL
+end
+
+local function VelocityFallCheck(ply)
+	if not IsValid(ply) or not ply:Alive() then return end
 	local speed = ply:GetVelocity():Length()
 	if ROUND_NAME == "dr" then
 		return
 	end
-	if ply:GetMoveType() != MOVETYPE_NOCLIP and not ply.Fake and not ply:HasGodMode() and ply:Alive() then
+	if ply:GetMoveType() ~= MOVETYPE_NOCLIP and not ply.Fake and not ply:HasGodMode() then
 		if speed < 650 then return end
 
 		Faking(ply)
+	end
+end
+
+hook.Add("PlayerPostThink", "VelocityPlayerFallOnPlayerCheck", VelocityFallCheck)
+hook.Add("Think", "VelocityPlayerFallOnPlayerCheck_Think", function()
+	for _, p in ipairs(player.GetAll()) do
+		VelocityFallCheck(p)
 	end
 end)
 
@@ -252,14 +349,17 @@ function Faking(ply,force)
 		ply.FakeWeps = ply:GetWeapons()
 		ply.CurWeapon = ply:GetActiveWeapon()
 		ply.FakeWep = nil
-        ply:CreateFake((force or ply:GetVelocity() / 3))
-		ply:SetNWBool("Fake",ply.Fake)
-		ply:SetNWEntity("FakeRagdoll",ply.FakeRagdoll)
-		if !ply:GetActiveWeapon().SupportTPIK then
+        ply:CreateFake(force or Vector(0, 0, 0))
+        ply.Fake = true
+		ply:SetNWBool("Fake", true)
+		ply:SetNWEntity("FakeRagdoll", ply.FakeRagdoll)
+		if IsValid(ply:GetActiveWeapon()) and not ply:GetActiveWeapon().SupportTPIK then
 			ply:SetActiveWeapon(nil)
 		end
-        ply.Fake = true
 		ply:SetNoTarget(true)
+		ply:SetNoDraw(true)
+		ply:DrawShadow(false)
+		ply:SetNotSolid(true)
     else
 		if ply:GetNWBool("Cuffed") or IsValid(ply.FakeRagdoll) and ply.FakeRagdoll:GetNWBool("Cuffed") then
 			return
@@ -284,11 +384,15 @@ function Faking(ply,force)
 			return
 		end
 
-		if not IsValid(ply) or not ply:Alive() or (ply and ply.brokenspine) then
+		local org = ply.organism
+		local brokenspine = ply.brokenspine or (org and (org.brokenspine or org.spinebroken))
+		if not IsValid(ply) or not ply:Alive() or brokenspine then
 		    return
 		end
 
-		if ply.pain>50 or ply.blood<3000 then return end
+		local pain = ply.pain or (org and org.pain) or 0
+		local blood = ply.blood or (org and org.blood) or 5000
+		if pain > 50 or blood < 3000 then return end
 
 		ply:SetNoTarget(false)
 
@@ -317,9 +421,18 @@ function Faking(ply,force)
 		ply.FakeShooting = false
         ply.PLYSPAWN_OVERRIDE = false
 
-		ply.FakeRagdoll:Remove()
+		if IsValid(ply.FakeRagdoll) then
+			ply.FakeRagdoll:Remove()
+		end
+		local curFake = ply:GetNWEntity("FakeRagdoll")
+		if IsValid(curFake) then
+			curFake:Remove()
+		end
+		ply.FakeRagdoll = nil
+		ply:SetNWEntity("FakeRagdoll", NULL)
 
         ply.Fake = false
+		ply:SetNWBool("Fake", false)
 		ply.CanMove = true
         hg.ragdollFake[ply] = NULL
     end
@@ -368,20 +481,32 @@ end)
 
 RagdollOwner = hg.RagdollOwner
 
-hg.Faking = Faking
+hg.Gibbed = hg.Gibbed or {}
 
 hook.Add("PlayerDeath", "DeathRagdoll", function(ply, att, dmginfo)
-	if hg.Gibbed[ply] then return end
+	if hg.Gibbed and hg.Gibbed[ply] then return end
 	ply.LastRagdollTime = 0
-	if !ply.Fake then
+	if not ply.Fake or not IsValid(ply.FakeRagdoll) then
 		Faking(ply)
 	end
 
 	local rag = ply.FakeRagdoll
 
-	timer.Simple(0,function()
-		-- Удаляем стандартный труп Garry's Mod
-		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) then
+	-- Полностью скрываем модель умершего игрока, чтобы в игре оставался ТОЛЬКО труп (рагдолл)
+	ply:SetNoDraw(true)
+	ply:DrawShadow(false)
+	ply:SetNotSolid(true)
+	ply:SetNWBool("Fake", true)
+
+	if IsValid(rag) then
+		ply:SetNWEntity("FakeRagdoll", rag)
+		ply:SetNWEntity("RagdollDeath", rag)
+		rag:SetNWEntity("RagdollOwner", ply)
+	end
+
+	timer.Simple(0, function()
+		-- Удаляем стандартный труп Garry's Mod (например, у ботов или при CreateRagdoll)
+		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) and ply:GetRagdollEntity() ~= rag then
 			ply:GetRagdollEntity():Remove()
 		end
 
@@ -401,9 +526,9 @@ hook.Add("PlayerDeath", "DeathRagdoll", function(ply, att, dmginfo)
 	end)
 end)
 
-hook.Add("DoPlayerDeath", "Homigrad_BlockDefaultRagdoll2", function(ply)
+hook.Add("DoPlayerDeath", "Homigrad_BlockDefaultRagdoll", function(ply)
 	timer.Simple(0, function()
-		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) then
+		if IsValid(ply) and IsValid(ply:GetRagdollEntity()) and ply:GetRagdollEntity() ~= ply.FakeRagdoll then
 			ply:GetRagdollEntity():Remove()
 		end
 	end)
@@ -413,17 +538,15 @@ hook.Add("PlayerUse","KysUseInFake",function(ply)
 	if ply.Fake then return false end
 end)
 
-hook.Add("PhysgunPickup", "DropPlayer2", function(ply,ent)
-		if ent:IsPlayer() and !ent.Fake and ply:IsSuperAdmin() then
-
-			ent.isheld=true
-
-			Faking(ent)
-			return false
-		end
+hook.Add("PhysgunPickup", "DropPlayer2", function(ply, ent)
+	if ent:IsPlayer() then
+		-- Не роняем игрока в фейк при взятии физганом
+		return true
+	end
 end)
 
-hook.Add("Player Think","FakeThink",function(ply,time)
+local function FakeThink(ply)
+	if not IsValid(ply) then return end
 	if !ply.Fake then
 		local ang = ply:EyeAngles()
 		ang.p = 0
@@ -436,9 +559,15 @@ hook.Add("Player Think","FakeThink",function(ply,time)
 	if ply:GetNWBool("Cuffed") then
 		ply:SetActiveWeapon(nil)
 	end
-	ply:SetNWBool("Fake",ply.Fake)
-	ply:SetNWEntity("FakeRagdoll",ply.FakeRagdoll)
+	ply:SetNWBool("Fake", ply.Fake or false)
+	ply:SetNWEntity("FakeRagdoll", ply.FakeRagdoll)
     if not ply.Fake or not ply:Alive() then ply:SetNWBool("RightArm",false) ply:SetNWBool("LeftArm",false) return end
+
+	-- Если игрок в фейке, гарантируем невидимость и неосязаемость его физического тела
+	ply:SetNoDraw(true)
+	ply:DrawShadow(false)
+	ply:SetNotSolid(true)
+
     local rag = ply.FakeRagdoll
 	if not IsValid(rag) then ply:Kill() return end
 	if rag == NULL then return end
@@ -482,10 +611,13 @@ hook.Add("Player Think","FakeThink",function(ply,time)
 	local pdiff = math.AngleDifference(ply.PrevAng.p,ply:EyeAngles().p)
 	local p_diff_round = math.Round(pdiff / 5,1)
 	ply:SetPos(HeadPos)
-	//ply:SetNoDraw(false)
+	ply:SetNoDraw(true)
+	ply:DrawShadow(false)
+	ply:SetNotSolid(true)
 	ply:SetMaterial(rag:GetMaterial())
-	if !ply.otrub then rag:SetEyeTarget( LocalPos ) else rag:SetEyeTarget( Vector(0,0,0) ) end
-	if ply.otrub then
+	local is_otrub = ply.otrub or (ply.organism and ply.organism.otrub)
+	if !is_otrub then rag:SetEyeTarget( LocalPos ) else rag:SetEyeTarget( Vector(0,0,0) ) end
+	if is_otrub then
 		if IsValid(rag.ZacConsRH) then
 			rag.ZacConsRH:Remove()
 		end
@@ -502,10 +634,17 @@ hook.Add("Player Think","FakeThink",function(ply,time)
 	if ply:InVehicle() then
 		ply:ExitVehicle()
 	end
-	ply:SetNWBool("Fake",ply.Fake)
+	ply:SetNWBool("Fake", ply.Fake or false)
     rag:SetFlexWeight(9,0)
 
 	hook.Run("FakeControl",ply,rag)
+end
+
+hook.Add("PlayerPostThink", "FakeThink", FakeThink)
+hook.Add("Think", "FakeThink_GlobalLoop", function()
+	for _, p in ipairs(player.GetAll()) do
+		FakeThink(p)
+	end
 end)
 
 hook.Add("PlayerSpawn","collide",function(ply)
@@ -538,14 +677,180 @@ hook.Add("Player Collide","Ragdolling-Collide",function(ply,ent,data)
 	if ROUND_NAME == "dr" then
 		return
 	end
-	if (ent:GetVelocity():Length() > LIMIT_SPEED or ent:GetPhysicsObject():GetMass() > LIMIT_MASS and ent:GetVelocity():Length() > LIMIT_SPEED / 2) and ent != ply and !ply:IsStandingOn(ent) then
-		//print(!ply:IsStandingOn(ent))
-		timer.Simple(0,function()
-			if not IsValid(ply) or ply.Fake then return end
-			if ent:IsPlayerHolding() then
-				return 
+	-- Сбивание автомобилем
+	if ent:IsVehicle() or (ent.Base and string.find(ent.Base, "glide")) or ent.IsGlideVehicle then
+		local vehVel = ent:GetVelocity()
+		local vehSpeed = vehVel:Length()
+		if vehSpeed > 140 then
+			HandlePedestrianHit(ent, ply, vehSpeed, vehVel:GetNormalized())
+			return
+		end
+	end
+
+	-- Столкновения с обычными проппами (стулья, коробки и т.д.) не роняют игрока в фейк
+end)
+
+-- =========================================================================
+-- 1. ВЫЛЕТ ИЗ МАШИНЫ ПРИ СТОЛКНОВЕНИИ / АВАРИИ
+-- =========================================================================
+
+local function EjectPlayerFromVehicle(ply, veh, crashSpeed, crashNormal)
+	if not IsValid(ply) or not ply:Alive() then return end
+	if ply._justEjectedFromCar and ply._justEjectedFromCar > CurTime() then return end
+	ply._justEjectedFromCar = CurTime() + 1.5
+
+	local vehVel = veh:GetVelocity()
+	local exitPos = veh:GetPos() + Vector(0, 0, 45) + (crashNormal or veh:GetForward()) * 25
+
+	ply:ExitVehicle()
+	ply:SetPos(exitPos)
+
+	-- Сила выброса направлена по вектору движения машины с подъемом вверх
+	local ejectForce = (vehVel * 1.2) + Vector(0, 0, 150)
+	if ejectForce:Length() < 300 then
+		ejectForce = (veh:GetForward() * crashSpeed * 1.2) + Vector(0, 0, 150)
+	end
+
+	-- Наносим первичный урон от удара машины
+	local dmgAmount = math.Clamp((crashSpeed - 350) * 0.08, 5, 60)
+	local dmg = DamageInfo()
+	dmg:SetDamage(dmgAmount)
+	dmg:SetDamageType(DMG_CRUSH)
+	dmg:SetAttacker(veh)
+	dmg:SetInflictor(veh)
+	ply:TakeDamageInfo(dmg)
+
+	-- Вызываем фейк с начальной скоростью выброса
+	Faking(ply, ejectForce)
+
+	ply:EmitSound("physics/body/body_medium_impact_hard" .. math.random(1, 6) .. ".wav", 80, 100)
+end
+
+local function HandleVehicleCrash(veh, hitEnt, speed, normal)
+	if speed < 380 then return end -- Порог скорости столкновения
+
+	local driver = veh:GetDriver()
+	if IsValid(driver) and driver:IsPlayer() then
+		EjectPlayerFromVehicle(driver, veh, speed, normal)
+	end
+
+	local plys = veh:GetPassengerSeat() and veh:GetPassengerSeat():GetDriver()
+	if IsValid(plys) and plys:IsPlayer() then
+		EjectPlayerFromVehicle(plys, veh, speed, normal)
+	end
+
+	for _, child in ipairs(veh:GetChildren()) do
+		if child:IsVehicle() then
+			local pass = child:GetDriver()
+			if IsValid(pass) and pass:IsPlayer() then
+				EjectPlayerFromVehicle(pass, veh, speed, normal)
 			end
-			Faking(ply)
+		end
+	end
+end
+
+-- Функция удара/сбивания пешехода автомобилем
+local function HandlePedestrianHit(veh, ply, hitSpeed, hitDir)
+	if not IsValid(ply) or not ply:IsPlayer() or not ply:Alive() then return end
+	if ply:InVehicle() then return end
+	if ply._lastCarHitTime and ply._lastCarHitTime > CurTime() then return end
+	ply._lastCarHitTime = CurTime() + 0.6
+
+	-- Если скорость меньше 140 (легкий толчок), не сбиваем с ног
+	if hitSpeed < 140 then return end
+
+	local dir = hitDir
+	if not dir or dir:LengthSqr() == 0 then
+		dir = (ply:GetPos() - veh:GetPos()):GetNormalized()
+	end
+	dir.z = 0
+	if dir:LengthSqr() == 0 then dir = veh:GetForward() end
+	dir:Normalize()
+
+	-- Сила отлета зависит от скорости машины
+	local forwardForce = math.Clamp(hitSpeed * 1.5, 200, 1500)
+	local upwardForce = math.Clamp(hitSpeed * 0.8, 120, 600)
+	local launchImpulse = (dir * forwardForce) + Vector(0, 0, upwardForce)
+
+	-- Урон от наезда в зависимости от скорости
+	local dmgAmount = math.Clamp(math.floor((hitSpeed - 120) * 0.18), 5, 100)
+	local dmg = DamageInfo()
+	dmg:SetDamage(dmgAmount)
+	dmg:SetDamageType(DMG_VEHICLE)
+	dmg:SetAttacker(IsValid(veh:GetDriver()) and veh:GetDriver() or veh)
+	dmg:SetInflictor(veh)
+	dmg:SetDamagePosition(ply:GetPos() + Vector(0, 0, 35))
+	dmg:SetDamageForce(launchImpulse * 20)
+	ply:TakeDamageInfo(dmg)
+
+	-- Падение в fake
+	if not ply.Fake then
+		Faking(ply, launchImpulse)
+	else
+		-- Если уже в фейке, придаем дополнительный импульс его рагдоллу
+		local rag = ply.FakeRagdoll or ply:GetNWEntity("FakeRagdoll")
+		if IsValid(rag) then
+			for i = 0, rag:GetPhysicsObjectCount() - 1 do
+				local phys = rag:GetPhysicsObjectNum(i)
+				if IsValid(phys) then
+					phys:ApplyForceCenter(launchImpulse * phys:GetMass() * 0.5)
+				end
+			end
+		end
+	end
+
+	-- Звук глухого удара
+	ply:EmitSound("physics/body/body_medium_impact_hard" .. math.random(1, 6) .. ".wav", 85, math.random(90, 105))
+end
+
+-- Отслеживание столкновений для всех транспортов через PhysicsCollide
+hook.Add("OnEntityCreated", "ZS_Vehicle_CollisionSetup", function(ent)
+	if ent:IsVehicle() or (ent.Base and string.find(ent.Base, "glide")) or ent.IsGlideVehicle then
+		timer.Simple(0.2, function()
+			if not IsValid(ent) then return end
+			ent:AddCallback("PhysicsCollide", function(v, data)
+				if not IsValid(v) then return end
+				local hitEnt = data.HitEntity
+				local speed = data.OurOldVelocity and data.OurOldVelocity:Length() or v:GetVelocity():Length()
+
+				-- 1. Сбивание пешехода
+				if IsValid(hitEnt) and hitEnt:IsPlayer() then
+					local hitDir = data.OurOldVelocity and data.OurOldVelocity:GetNormalized() or v:GetVelocity():GetNormalized()
+					HandlePedestrianHit(v, hitEnt, speed, hitDir)
+				end
+
+				-- 2. Авария самого транспорта (вылет водителя/пассажиров при сильном ударе)
+				if speed > 380 and hitEnt ~= v then
+					HandleVehicleCrash(v, hitEnt, speed, data.HitNormal)
+				end
+			end)
 		end)
 	end
 end)
+
+-- Дополнительная проверка на резкое торможение/удар транспорта в тике (на случай пропуска коллизий)
+hook.Add("Think", "ZS_Vehicle_CrashMonitor", function()
+	for _, ply in player.Iterator() do
+		if IsValid(ply) and ply:Alive() and ply:InVehicle() and not ply.Fake then
+			local veh = ply:GetVehicle()
+			if IsValid(veh) then
+				local curVel = veh:GetVelocity()
+				local curSpeed = curVel:Length()
+
+				veh._prevSpeed = veh._prevSpeed or curSpeed
+				local speedDelta = veh._prevSpeed - curSpeed
+
+				-- Резкое падение скорости больше чем на 350 за один тик (врезался в стену/препятствие)
+				if speedDelta > 350 then
+					HandleVehicleCrash(veh, NULL, veh._prevSpeed, curVel:GetNormalized())
+				end
+
+				veh._prevSpeed = curSpeed
+			end
+		end
+	end
+end)
+
+-- =========================================================================
+-- 2. УРОН В FAKE ПРИ ПАДЕНИИ И СИЛЬНЫХ УДАРАХ РАГДОЛЛА ОБ ЗЕМЛЮ / СТЕНЫ
+-- =========================================================================
